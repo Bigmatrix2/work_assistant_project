@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
-from src.config import CORPUS_PATH
+from src.config import CORPUS_PATH, HARD_REFUSAL_THRESHOLD
 from src.corpus_builder import build_corpus
 from src.chunking import build_chunks
 from src.indexing import index_chunks, load_index_meta
@@ -23,6 +23,7 @@ from src.retrieval import hybrid_search
 from src.decomposition import decompose_question
 from src.generation import generate_answer
 from src.groq_client import chat as groq_chat
+from src.reference_checker import check_references
 
 MAX_HISTORY_TURNS = 3
 
@@ -84,6 +85,21 @@ def cmd_chat(_args) -> None:
 
         retrieval_result = hybrid_search(sub_questions)
         answer = generate_answer(standalone_question, retrieval_result)
+
+        # Agent récupérateur de référence (post-traitement déterministe) :
+        # verifie en direct sur Légifrance les articles reellement cites,
+        # uniquement si un refus strict n'a pas deja ete declenche (jamais
+        # de verification sur une reponse "je ne trouve pas cette info").
+        if retrieval_result["chunks"] and retrieval_result["confidence"] >= HARD_REFUSAL_THRESHOLD:
+            article_ids = sorted({
+                c["metadata"]["article_id"] for c in retrieval_result["chunks"]
+                if c["metadata"].get("article_id")
+            })
+            local_texts = {
+                c["metadata"]["article_id"]: c["metadata"].get("texte_brut")
+                for c in retrieval_result["chunks"] if c["metadata"].get("article_id")
+            }
+            answer += check_references(article_ids, local_texts)
 
         print(f"\nAssistant >\n{answer}\n")
 

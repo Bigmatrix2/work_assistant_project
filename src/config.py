@@ -47,8 +47,8 @@ RRF_K = 60                      # constante standard de la Reciprocal Rank Fusio
 #
 # Valeurs calibrees empiriquement avec tests/calibrate_confidence.py sur le
 # corpus de 40 articles (voir COMPTE_RENDU.md pour le detail des mesures) :
-#   - score min observe sur des questions reellement dans le corpus : 0.40
-#   - score max observe sur du hors-sujet évident : 0.28
+#   - score min observe sur des questions reellement dans le corpus : 0.42
+#   - score max observe sur du hors-sujet évident : 0.34
 #   - score max observe sur des "pieges" juridiques proches (retraite
 #     complementaire, fonction publique) : 0.50 -> RECOUVREMENT réel avec le
 #     corpus. Un seuil unique ne sépare donc pas parfaitement tous les cas :
@@ -56,6 +56,12 @@ RRF_K = 60                      # constante standard de la Reciprocal Rank Fusio
 #     refus a tort d'une vraie question), au prix de laisser passer certains
 #     pieges vers le LLM plutot que vers le refus sans appel. Le prompt de
 #     génération sert de seconde ligne de defense sur ces cas ambigus.
+#
+# Recalibre une seconde fois apres correction des accents dans le corpus et
+# les prompts : les embeddings sont sensibles a l'orthographe, le score du
+# hors-sujet evident est passe de 0.28 a 0.34 apres correction. Preuve que
+# la calibration doit etre relancee apres tout changement du texte source,
+# pas seulement apres un changement de corpus au sens strict.
 CONFIDENCE_THRESHOLD = 0.35
 HARD_REFUSAL_THRESHOLD = 0.38
 
@@ -78,3 +84,35 @@ CORPUS_DATE_NOTICE_TEMPLATE = (
     "Corpus a jour au {date}. Le droit du travail évolue (lois, ordonnances, jurisprudence) : "
     "verifiez les articles cites sur legifrance.gouv.fr avant toute decision."
 )
+
+# --- API Légifrance / PISTE ("agent récupérateur de référence") ---
+# Vérifie en temps réel, après génération de la réponse, que le texte des
+# articles cités correspond à la version actuellement en vigueur sur
+# Légifrance. Post-traitement DÉTERMINISTE (pas d'appel outil par le LLM) :
+# plus simple, plus prévisible, plus facile à expliquer à l'oral.
+#
+# Inscription gratuite sur https://piste.gouv.fr/registration puis création
+# d'une application (sandbox suffit pour un usage pédagogique - pas besoin
+# de valider les CGU de production). Récupérer Client ID et Client Secret
+# dans l'onglet "Applications" de PISTE, les mettre dans .env.
+PISTE_CLIENT_ID = os.getenv("PISTE_CLIENT_ID", "")
+PISTE_CLIENT_SECRET = os.getenv("PISTE_CLIENT_SECRET", "")
+# Sandbox par défaut : gratuit, sans validation de CGU supplémentaire,
+# suffisant pour un usage pédagogique. Passer à False nécessite d'avoir
+# validé les CGU de production sur PISTE (voir README).
+PISTE_SANDBOX = os.getenv("PISTE_SANDBOX", "true").lower() != "false"
+
+if PISTE_SANDBOX:
+    PISTE_OAUTH_URL = "https://sandbox-oauth.piste.gouv.fr/api/oauth/token"
+    PISTE_API_BASE = "https://sandbox-api.piste.gouv.fr/dila/legifrance/lf-engine-app"
+else:
+    PISTE_OAUTH_URL = "https://oauth.piste.gouv.fr/api/oauth/token"
+    PISTE_API_BASE = "https://api.piste.gouv.fr/dila/legifrance/lf-engine-app"
+
+# Nom exact du code tel qu'attendu par le filtre "NOM_CODE" de l'API de recherche.
+LEGIFRANCE_CODE_NAME = "Code du travail"
+
+# Délai (secondes) au-delà duquel on abandonne l'appel Légifrance plutôt que
+# de faire attendre l'utilisateur : la vérification est un bonus, jamais un
+# blocage du pipeline principal.
+PISTE_TIMEOUT_SECONDS = 5
