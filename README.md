@@ -20,8 +20,7 @@ Question utilisateur
    -> Generation (Groq, temperature basse) avec citations obligatoires
    -> Assemblage final : avertissement juridique + date du corpus
       ajoutes par le CODE (pas seulement demandes au LLM)
-   -> Agent recuperateur de reference (optionnel, non valide en conditions
-      reelles - voir Axes d'amelioration) : verifierait en direct sur
+   -> Agent recuperateur de reference (optionnel) : verifie en direct sur
       l'API Legifrance que les articles cites sont toujours a jour
 ```
 
@@ -65,12 +64,13 @@ cp .env.example .env   # puis renseignez GROQ_API_KEY dans .env
 
 Facultatif - l'assistant fonctionne normalement sans cette étape.
 
-> **Retour d'expérience** : nous avons tenté cette configuration et rencontré
-> un blocage administratif côté PISTE (erreur 403 Forbidden lors du
-> consentement CGU de l'API Légifrance, empêchant de finaliser
-> l'autorisation), non résolu dans le temps disponible. Voir "Axes
-> d'amélioration" et COMPTE_RENDU.md pour le détail. Le code reste inclus
-> et fonctionnel dès que l'accès PISTE sera débloqué.
+> **Retour d'expérience** : nous avons rencontré un blocage administratif
+> initial côté PISTE (erreur 403 Forbidden lors du consentement CGU de
+> l'API Légifrance), **résolu après un délai de propagation** (probablement
+> quelques dizaines de minutes après acceptation des CGU). Une fois débloqué,
+> l'intégration fonctionne de bout en bout et a révélé une découverte
+> importante sur la qualité du corpus - voir "Axes d'amélioration" et
+> COMPTE_RENDU.md pour le détail complet.
 
 1. Inscription gratuite sur [piste.gouv.fr/registration](https://piste.gouv.fr/registration)
 2. Créer une application (l'environnement **sandbox** suffit, pas besoin de
@@ -386,7 +386,7 @@ d'amélioration concret (voir section suivante).
 Priorises par impact probable sur le barème et l'usage réel, sur la base de
 tout ce que les tests ont révèle.
 
-### Implémenté, mais non validé en conditions réelles
+### Réalisé et validé en conditions réelles
 
 - **Agent récupérateur de référence (API Légifrance/PISTE)** : suivant la
   recommandation du prof. Après génération de la réponse, `reference_checker.py`
@@ -395,33 +395,63 @@ tout ce que les tests ont révèle.
   article cité, et compare le texte actuellement en vigueur au texte de
   notre corpus local. Répond concrètement à la question de réflexion 3
   (fraîcheur) : au lieu d'afficher seulement une date de corpus, le système
-  vérifierait activement. Choix de conception : **post-traitement
+  vérifie activement. Choix de conception : **post-traitement
   déterministe**, pas de fusion technique avec l'API Groq - deux appels HTTP
   indépendants orchestrés par notre propre code (`cli.py`), pas de
   "function calling" LLM. Dégradation silencieuse si `PISTE_CLIENT_ID`/
   `PISTE_CLIENT_SECRET` ne sont pas configurés dans `.env` : le pipeline
   principal n'est jamais bloqué par l'indisponibilité de cette vérification
-  optionnelle (verifie et teste : le pipeline principal tourne normalement
-  sans identifiants PISTE).
+  optionnelle (vérifié et testé).
 
-  **Limite assumee** : le code est écrit et suit la documentation officielle
-  de l'API (flux OAuth2 client credentials, format exact des requêtes
-  `/search` et `/consult/getArticle`), mais **n'a pas pu être validé de bout
-  en bout avec un compte PISTE réel** dans le temps disponible. Blocage
-  rencontré : l'inscription PISTE nécessite l'acceptation des CGU de l'API
-  Légifrance pour pouvoir cocher la case "Légifrance" dans la configuration
-  de l'application (sandbox) ; le parcours de consentement CGU renvoie une
-  erreur 403 Forbidden ("You don't have permission to access this
-  resource") au moment de l'autorisation OAuth, malgré plusieurs tentatives
-  et la génération de deux jeux d'identifiants différents. Ce blocage est
-  administratif (côté PISTE), pas un bug de notre client HTTP : l'obtention
-  d'un jeton OAuth2 a bien fonctionné avec des identifiants valides (voir
-  COMPTE_RENDU.md), seule l'autorisation de consommer l'API Légifrance
-  spécifiquement reste bloquée. Le module reste inclus dans le rendu comme
-  preuve de la démarche suivie, correctement isolé (aucun impact sur le
-  reste du pipeline si non fonctionnel).
+  **Test de bout en bout réussi** : `python -m src.legifrance_client`
+  renvoie le texte actuellement en vigueur de l'article L3141-3 directement
+  depuis Légifrance. Deux difficultés réelles rencontrées et documentées en
+  détail dans COMPTE_RENDU.md :
+  1. Un blocage administratif initial côté PISTE (403 Forbidden, consentement
+     CGU), résolu après un délai de propagation.
+  2. Un point d'implémentation non documenté explicitement par l'API :
+     l'identifiant interne d'un article precis (`LEGIARTI...`) n'est pas au
+     niveau racine du résultat de recherche (qui ne contient que
+     l'identifiant du CODE entier, `LEGITEXT...`), mais niché dans
+     `results[].sections[].extracts[]`, avec filtrage nécessaire sur le
+     numéro d'article exact et sur la version actuellement en vigueur
+     (`dateFin` absente) pour éviter de récupérer une version historique
+     obsolète de l'article.
+
+  **Découverte majeure faite grâce à cet agent, une fois branché sur le
+  pipeline complet** : sur un test réel ("Combien de jours de congés payés
+  acquiert-on par mois ?"), les 5 articles cités ont TOUS été signalés
+  comme "texte différent de la version actuelle". Investigation : ce n'est
+  pas un faux positif ni un changement récent de la loi, mais le signe que
+  **notre corpus local contient des paraphrases** des articles (rédigées à
+  la construction initiale du corpus, Option C manuelle) plutôt que le texte
+  officiel mot pour mot. Exemple concret sur L3141-3 :
+  - Notre corpus : *"Le salarié a droit à un congé de deux jours et demi
+    ouvrables par mois de travail effectif chez le même employeur."*
+  - Légifrance (texte réel) : *"Le salarié qui, au cours de l'année de
+    référence, justifie avoir travaillé chez le même employeur pendant un
+    temps équivalent à un minimum d'un mois de travail effectif a droit à
+    un congé de deux jours et demi ouvrables par mois de travail."*
+
+  Même sens juridique, formulation différente. C'est un résultat honnête et
+  utile de l'agent de vérification : il fait exactement ce pour quoi il a
+  été conçu (détecter un écart entre le corpus local et la source
+  officielle), même si la cause ici est une limite de construction du
+  corpus plutôt qu'une évolution récente de la loi. Voir "Axes
+  d'amélioration" pour la piste de correction (réutiliser ce même client
+  pour regénérer le corpus avec le texte officiel exact).
 
 ### Priorite haute
+
+- **Remplacer le texte paraphrasé du corpus par le texte officiel exact**
+  (constat direct de la découverte ci-dessus) : le client Légifrance
+  fonctionnel (`legifrance_client.py`) peut regénérer `seed_corpus.json` en
+  appelant `get_current_article_text(article_id)` pour chacun des 40
+  articles et en remplaçant le champ `texte` par le résultat exact - un
+  script d'une trentaine de lignes réutilisant l'existant. Corrigerait à la
+  fois la fidélité juridique du corpus (impact direct sur "Constitution du
+  corpus" et "Qualité des réponses" au barème) et éliminerait les faux
+  positifs de l'agent de vérification de fraîcheur.
 
 - **Filtrage post-génération des numéros d'articles hors contexte** : valider
   par regex que tout numéro d'article mentionne dans le CORPS de la réponse

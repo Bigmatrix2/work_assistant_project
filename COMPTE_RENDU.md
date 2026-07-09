@@ -154,47 +154,79 @@ Par ordre de priorite :
   fonctionnalité n'apparaît tout simplement pas dans la réponse, sans erreur
   ni ralentissement du pipeline principal - vérifié en test.
 
-  **Blocage rencontré lors de la validation en conditions réelles** :
-  l'inscription sur PISTE et la création d'une application sandbox se sont
-  bien déroulées, et l'obtention d'un jeton OAuth2 a fonctionné avec un
-  premier jeu d'identifiants (Client ID/Secret de 36 caractères chacun).
-  En revanche, l'appel à l'endpoint `/search` de l'API Légifrance a renvoyé
-  une erreur 403 Forbidden, et la case permettant d'activer explicitement
-  l'API Légifrance pour notre application restait grisée dans l'interface
-  PISTE. Un second essai via l'outil de test interactif (Swagger) intégré
-  au portail PISTE a exposé la cause probable : ce testeur préremplit par
-  défaut le champ "client_id" avec l'email de connexion au compte PISTE
-  plutôt qu'avec le Client ID de l'application - une confusion qui explique
-  aussi une tentative précédente ayant échoué avec un "invalid_client".
-  Même en tentant le parcours d'autorisation OAuth complet ("Authorize")
-  depuis cette interface, le portail a renvoyé une page 403 Forbidden
-  générique ("You don't have permission to access this resource"),
-  suggérant que le consentement aux CGU de l'API Légifrance - préalable
-  necessaire, documenté dans la FAQ officielle de Légifrance, pour pouvoir
-  cocher la case d'activation - n'a pas pu être finalisé dans le temps
-  disponible, sans que la cause exacte (délai de propagation côté PISTE,
-  étape de consentement mal localisée dans une interface peu intuitive,
-  autre restriction non documentée) ait pu être isolée avec certitude.
+  **Blocage initial rencontré, puis résolu** : l'inscription sur PISTE et la
+  création d'une application sandbox se sont bien déroulées, et l'obtention
+  d'un jeton OAuth2 a fonctionné avec un premier jeu d'identifiants
+  (Client ID/Secret de 36 caractères chacun). En revanche, l'appel à
+  l'endpoint `/search` de l'API Légifrance a d'abord renvoyé une erreur 403
+  Forbidden, et la case permettant d'activer explicitement l'API Légifrance
+  pour notre application restait grisée dans l'interface PISTE. Un second
+  essai via l'outil de test interactif (Swagger) intégré au portail PISTE a
+  exposé une cause secondaire probable : ce testeur préremplit par défaut le
+  champ "client_id" avec l'email de connexion au compte PISTE plutôt qu'avec
+  le Client ID de l'application - une confusion qui explique aussi une
+  tentative précédente ayant échoué avec un "invalid_client". Le blocage
+  principal (403 sur `/search`) s'est résolu de lui-même après un délai
+  (probablement un temps de propagation du consentement CGU côté PISTE,
+  sans qu'on ait pu isoler l'action exacte qui a débloqué la situation) :
+  un nouveau test, plus tard, a réussi sans aucune modification de notre
+  côté.
 
-  **Décision** : le module est conservé dans le rendu (code fonctionnel,
-  dégradation silencieuse vérifiée, documentation complète) comme preuve de
-  la démarche suivie en réponse à la recommandation du prof, mais sans
-  validation end-to-end faute d'accès débloqué à temps. C'est, à notre sens,
-  un compromis honnête entre suivre la recommandation et ne pas bloquer le
-  reste du rendu sur une dépendance externe hors de notre contrôle.
+  **Deuxième difficulté, une fois l'authentification débloquée** :
+  l'endpoint `/search` renvoyait bien une réponse 200 OK, mais notre
+  parsing initial extrayait le mauvais identifiant. La structure de réponse
+  de l'API n'est pas intuitive : l'identifiant au niveau racine du résultat
+  (`titles[].id`) est celui du CODE entier (`LEGITEXT000006072050...`), pas
+  celui d'un article précis. L'identifiant réellement utilisable pour
+  `/consult/getArticle` (`LEGIARTI...`) est niché trois niveaux plus bas,
+  dans `results[].sections[].extracts[]`, avec un champ `num` permettant de
+  confirmer la correspondance avec le numéro d'article recherché, et un
+  champ `dateFin` permettant de distinguer la version actuellement en
+  vigueur d'une version historique du même article. Ce détail n'était pas
+  evident depuis la documentation generale de l'API ; il a fallu inspecter
+  une réponse JSON réelle (via un affichage de debug temporaire) pour le
+  découvrir. Corrigé dans `legifrance_client.py::search_article_internal_id`.
+
+  **Découverte majeure, une fois le pipeline complet testé** : sur la
+  question "Combien de jours de congés payés acquiert-on par mois ?", les 5
+  articles cités par la réponse ont TOUS été signalés par l'agent comme
+  ayant un texte "différent" de la version actuelle sur Légifrance. Ce
+  n'est ni un bug de comparaison ni un changement récent de la loi : la
+  comparaison exacte du texte de L3141-3 révèle que notre corpus contient
+  une **paraphrase** ("Le salarié a droit à un congé de deux jours et demi
+  ouvrables par mois de travail effectif chez le même employeur.") et non
+  le texte officiel mot pour mot ("Le salarié qui, au cours de l'année de
+  référence, justifie avoir travaillé chez le même employeur pendant un
+  temps équivalent à un minimum d'un mois de travail effectif a droit à un
+  congé de deux jours et demi ouvrables par mois de travail."). Même sens
+  juridique, formulation différente - suffisant pour que notre comparaison
+  de texte normalisée détecte un écart. C'est un résultat que nous jugeons
+  positif malgré les apparences : l'agent de vérification fait exactement
+  ce pour quoi il a été conçu, et révèle une limite réelle de notre
+  méthode de construction du corpus (Option C, saisie manuelle à partir de
+  connaissances générales plutôt que copie exacte depuis Légifrance) que
+  nous n'aurions pas détectée sans cette vérification en direct.
+
+  **Décision** : le module est conservé dans le rendu, fonctionnel et validé
+  de bout en bout (jeton OAuth2, recherche, récupération de texte, et
+  détection d'écart, tous testés avec succès). La découverte qu'il a
+  permise (corpus paraphrasé plutôt que verbatim) est documentée comme axe
+  d'amélioration prioritaire plutôt que corrigée dans l'urgence, faute de
+  temps pour régénérer les 40 articles avant la deadline - mais le script
+  de régénération serait trivial a écrire desormais, puisque le client
+  Légifrance fonctionnel expose déjà `get_current_article_text(article_id)`.
 
 ## Ce que nous ferions avec plus de temps
 
-- Résoudre le blocage d'accès à l'API Légifrance via PISTE (probablement en
-  contactant le support PISTE ou en refaisant l'inscription avec un compte
-  distinct, pour isoler si le problème vient du consentement CGU ou d'un
-  état transitoire de l'application), afin de valider en conditions réelles
-  l'agent récupérateur de référence déjà codé et testé en dégradation
-  silencieuse.
-- Étendre le corpus via l'API Legifrance (Option A) en réutilisant le client
-  déjà écrit pour l'agent récupérateur de référence (`legifrance_client.py`)
-  pour couvrir davantage d'articles par thème et réduire le bruit dans les
-  chunks retrouves sur les questions composees.
+- **Régénérer le texte des 40 articles du corpus avec le texte officiel
+  exact** (priorité identifiée directement par notre propre agent de
+  vérification, voir découverte ci-dessus), en écrivant un script court
+  réutilisant `legifrance_client.get_current_article_text(article_id)` déjà
+  fonctionnel, plutôt que les paraphrases actuelles de `seed_corpus.json`.
+- Étendre le corpus au-delà de 40 articles via l'API Legifrance (Option A)
+  en réutilisant le même client, pour couvrir davantage d'articles par
+  thème et réduire le bruit dans les chunks retrouves sur les questions
+  composees.
 - Resserrer le prompt de génération pour eviter les digressions sur des
   numéros d'articles mentionnes en référence croisee mais hors-sujet.
 - Calibrer `HARD_REFUSAL_THRESHOLD` sur un jeu de test plus large que les 5

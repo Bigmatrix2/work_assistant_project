@@ -58,15 +58,15 @@ def get_access_token():
         )
         return None
 
-    # Diagnostic minimal, sans jamais afficher le secret en clair : aide a
-    # detecter un identifiant vide, tronque, ou entoure de guillemets/espaces
-    # accidentels lors de la copie depuis PISTE.
-    masked_id = PISTE_CLIENT_ID[:4] + "..." if len(PISTE_CLIENT_ID) > 4 else "(vide ou trop court)"
-    print(f"[Légifrance] Client ID charge : {masked_id} (longueur {len(PISTE_CLIENT_ID)}), "
-          f"Client Secret charge : longueur {len(PISTE_CLIENT_SECRET)}.")
-
     if _token_cache["access_token"] and time.time() < _token_cache["expires_at"]:
         return _token_cache["access_token"]
+
+    # Diagnostic minimal (une seule fois par session, uniquement lors d'une
+    # vraie requete de jeton), sans jamais afficher le secret en clair :
+    # aide a detecter un identifiant vide, tronque, ou entoure de
+    # guillemets/espaces accidentels lors de la copie depuis PISTE.
+    masked_id = PISTE_CLIENT_ID[:4] + "..." if len(PISTE_CLIENT_ID) > 4 else "(vide ou trop court)"
+    print(f"[Légifrance] Authentification PISTE (Client ID : {masked_id}...).")
 
     import requests
     try:
@@ -138,15 +138,35 @@ def search_article_internal_id(article_number: str, code_name: str = LEGIFRANCE_
         data = response.json()
         results = data.get("results") or []
         if not results:
+            print(f"[Légifrance] Recherche de {article_number} : aucun résultat. "
+                  f"Réponse brute (300 premiers caractères) : {str(data)[:300]}")
             return None
-        first = results[0]
-        # La structure exacte de la reponse peut varier selon la version de
-        # l'API : on essaie plusieurs chemins plausibles plutot que de
-        # supposer un seul format.
-        titles = first.get("titles") or []
-        if titles and titles[0].get("id"):
-            return titles[0]["id"]
-        return first.get("id")
+
+        # L'identifiant LEGIARTI (article precis) est niche dans
+        # results[].sections[].extracts[], pas au niveau racine du resultat
+        # (qui ne contient que l'identifiant LEGITEXT du CODE entier). On
+        # parcourt tous les extraits de tous les resultats/sections, on ne
+        # garde que ceux dont le numero correspond exactement a l'article
+        # recherche, et on privilegie la version actuellement en vigueur
+        # (dateFin absente/null = toujours applicable) si plusieurs versions
+        # historiques du meme article apparaissent.
+        matching_extracts = []
+        for result in results:
+            for section in (result.get("sections") or []):
+                for extract in (section.get("extracts") or []):
+                    if extract.get("num") == article_number and extract.get("id"):
+                        matching_extracts.append(extract)
+
+        if not matching_extracts:
+            print(f"[Légifrance] Aucun extrait correspondant exactement a {article_number} "
+                  f"trouve dans les sections/extraits de la reponse.")
+            return None
+
+        # Priorite aux extraits sans date de fin (version actuellement en
+        # vigueur) ; a defaut, on prend le premier trouve.
+        currently_in_force = [e for e in matching_extracts if not e.get("dateFin")]
+        chosen = currently_in_force[0] if currently_in_force else matching_extracts[0]
+        return chosen["id"]
     except Exception as exc:
         print(f"[Légifrance] Recherche de l'article {article_number} impossible ({exc}).")
         return None
@@ -169,7 +189,11 @@ def get_article_text_by_internal_id(legiarti_id: str):
             timeout=PISTE_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
-        return response.json().get("article")
+        article = response.json().get("article")
+        if not article:
+            print(f"[Légifrance] Réponse getArticle sans clé 'article' pour {legiarti_id}. "
+                  f"Réponse brute (300 premiers caractères) : {str(response.json())[:300]}")
+        return article
     except Exception as exc:
         print(f"[Légifrance] Récupération du texte de {legiarti_id} impossible ({exc}).")
         return None
