@@ -1,4 +1,4 @@
-# Compte rendu (1 page)
+# Compte rendu
 
 *A adapter avec vos propres mots avant la soutenance - ce qui suit reflète les
 tests reellement effectues sur le pipeline. Completez avec les elements
