@@ -57,7 +57,7 @@ RRF_K = 60                      # constante standard de la Reciprocal Rank Fusio
 #     pieges vers le LLM plutot que vers le refus sans appel. Le prompt de
 #     génération sert de seconde ligne de defense sur ces cas ambigus.
 CONFIDENCE_THRESHOLD = 0.35
-HARD_REFUSAL_THRESHOLD = 0.30
+HARD_REFUSAL_THRESHOLD = 0.38
 
 # --- LLM (Groq) ---
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
