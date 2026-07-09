@@ -140,12 +140,61 @@ Par ordre de priorite :
   qui dependait entièrement du prompt.
 - **Quota de chunks par sous-question** plutot qu'un pool global tronque,
   suite au bug de retrieval decrit ci-dessus.
+- **Agent récupérateur de référence (API Légifrance/PISTE)**, suivant la
+  recommandation du prof : après génération, `reference_checker.py`
+  interroge en direct Légifrance (OAuth2 client credentials, endpoints
+  `/search` puis `/consult/getArticle`) pour vérifier que chaque article
+  cité est toujours à jour par rapport à notre corpus local. Choix assumé :
+  **post-traitement déterministe** plutôt que "function calling" côté LLM
+  (Groq) - pas de fusion technique entre les deux API, simplement deux appels
+  HTTP indépendants enchaînés dans notre propre code (`cli.py`). Ce choix
+  privilégie la prévisibilité et la facilité d'explication à l'oral, au prix
+  de ne pas laisser le modèle décider lui-même quand vérifier. Dégradation
+  silencieuse si les identifiants PISTE ne sont pas configurés : la
+  fonctionnalité n'apparaît tout simplement pas dans la réponse, sans erreur
+  ni ralentissement du pipeline principal - vérifié en test.
+
+  **Blocage rencontré lors de la validation en conditions réelles** :
+  l'inscription sur PISTE et la création d'une application sandbox se sont
+  bien déroulées, et l'obtention d'un jeton OAuth2 a fonctionné avec un
+  premier jeu d'identifiants (Client ID/Secret de 36 caractères chacun).
+  En revanche, l'appel à l'endpoint `/search` de l'API Légifrance a renvoyé
+  une erreur 403 Forbidden, et la case permettant d'activer explicitement
+  l'API Légifrance pour notre application restait grisée dans l'interface
+  PISTE. Un second essai via l'outil de test interactif (Swagger) intégré
+  au portail PISTE a exposé la cause probable : ce testeur préremplit par
+  défaut le champ "client_id" avec l'email de connexion au compte PISTE
+  plutôt qu'avec le Client ID de l'application - une confusion qui explique
+  aussi une tentative précédente ayant échoué avec un "invalid_client".
+  Même en tentant le parcours d'autorisation OAuth complet ("Authorize")
+  depuis cette interface, le portail a renvoyé une page 403 Forbidden
+  générique ("You don't have permission to access this resource"),
+  suggérant que le consentement aux CGU de l'API Légifrance - préalable
+  necessaire, documenté dans la FAQ officielle de Légifrance, pour pouvoir
+  cocher la case d'activation - n'a pas pu être finalisé dans le temps
+  disponible, sans que la cause exacte (délai de propagation côté PISTE,
+  étape de consentement mal localisée dans une interface peu intuitive,
+  autre restriction non documentée) ait pu être isolée avec certitude.
+
+  **Décision** : le module est conservé dans le rendu (code fonctionnel,
+  dégradation silencieuse vérifiée, documentation complète) comme preuve de
+  la démarche suivie en réponse à la recommandation du prof, mais sans
+  validation end-to-end faute d'accès débloqué à temps. C'est, à notre sens,
+  un compromis honnête entre suivre la recommandation et ne pas bloquer le
+  reste du rendu sur une dépendance externe hors de notre contrôle.
 
 ## Ce que nous ferions avec plus de temps
 
-- Étendre le corpus via l'API Legifrance (Option A) pour couvrir davantage
-  d'articles par thème et réduire le bruit dans les chunks retrouves sur les
-  questions composees.
+- Résoudre le blocage d'accès à l'API Légifrance via PISTE (probablement en
+  contactant le support PISTE ou en refaisant l'inscription avec un compte
+  distinct, pour isoler si le problème vient du consentement CGU ou d'un
+  état transitoire de l'application), afin de valider en conditions réelles
+  l'agent récupérateur de référence déjà codé et testé en dégradation
+  silencieuse.
+- Étendre le corpus via l'API Legifrance (Option A) en réutilisant le client
+  déjà écrit pour l'agent récupérateur de référence (`legifrance_client.py`)
+  pour couvrir davantage d'articles par thème et réduire le bruit dans les
+  chunks retrouves sur les questions composees.
 - Resserrer le prompt de génération pour eviter les digressions sur des
   numéros d'articles mentionnes en référence croisee mais hors-sujet.
 - Calibrer `HARD_REFUSAL_THRESHOLD` sur un jeu de test plus large que les 5
@@ -153,5 +202,5 @@ Par ordre de priorite :
   questions ambigues en plus des cas clairement dans/hors corpus.
 - Mesurer et documenter la latence réelle du pipeline complet (HyDE +
   decomposition + recherche hybride + génération peut représenter 3 a 4
-  appels LLM par question) pour decider si un mode "rapide" est nécessaire
-  en demonstration.
+  appels LLM par question, plus l'appel Légifrance optionnel) pour decider
+  si un mode "rapide" est nécessaire en demonstration.

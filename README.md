@@ -1,7 +1,7 @@
 # Assistant Code du travail (RAG)
 
-Assistant en ligne de commande qui répond a des questions de droit du travail
-francais en citant systématiquement les articles du Code du travail sur
+Assistant en ligne de commande qui repond a des questions de droit du travail
+francais en citant systematiquement les articles du Code du travail sur
 lesquels il s'appuie, sans utiliser LangChain ni LlamaIndex.
 
 ## Architecture du pipeline
@@ -20,6 +20,9 @@ Question utilisateur
    -> Generation (Groq, temperature basse) avec citations obligatoires
    -> Assemblage final : avertissement juridique + date du corpus
       ajoutes par le CODE (pas seulement demandes au LLM)
+   -> Agent recuperateur de reference (optionnel, non valide en conditions
+      reelles - voir Axes d'amelioration) : verifierait en direct sur
+      l'API Legifrance que les articles cites sont toujours a jour
 ```
 
 ## Structure du depot
@@ -36,6 +39,8 @@ src/
   retrieval.py        # Jalon 3 : recherche hybride BM25 + vectoriel + RRF
   groq_client.py      # Wrapper API Groq partage
   generation.py       # Jalon 4 : prompt, citations, disclaimer garanti par le code
+  legifrance_client.py   # Amelioration : client API Legifrance/PISTE (OAuth2 + recherche + consultation)
+  reference_checker.py   # Amelioration : agent recuperateur de reference (post-traitement)
   cli.py              # Jalon 5 : interface interactive + historique
 data/
   seed_corpus.json    # Corpus source (Option C, a completer via A/B - voir section corpus)
@@ -55,6 +60,28 @@ source venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env   # puis renseignez GROQ_API_KEY dans .env
 ```
+
+### Configuration optionnelle : agent récupérateur de référence (API Légifrance)
+
+Facultatif - l'assistant fonctionne normalement sans cette étape.
+
+> **Retour d'expérience** : nous avons tenté cette configuration et rencontré
+> un blocage administratif côté PISTE (erreur 403 Forbidden lors du
+> consentement CGU de l'API Légifrance, empêchant de finaliser
+> l'autorisation), non résolu dans le temps disponible. Voir "Axes
+> d'amélioration" et COMPTE_RENDU.md pour le détail. Le code reste inclus
+> et fonctionnel dès que l'accès PISTE sera débloqué.
+
+1. Inscription gratuite sur [piste.gouv.fr/registration](https://piste.gouv.fr/registration)
+2. Créer une application (l'environnement **sandbox** suffit, pas besoin de
+   valider les CGU de production pour un usage pédagogique)
+3. Dans l'onglet "Applications" de PISTE, activer l'API Légifrance pour
+   cette application et récupérer **Client ID** et **Client Secret**
+4. Renseigner `PISTE_CLIENT_ID` et `PISTE_CLIENT_SECRET` dans `.env`
+
+Sans ces identifiants, `reference_checker.py` se désactive silencieusement -
+aucune erreur, aucun blocage du pipeline principal.
+
 
 ## Lancement
 
@@ -359,6 +386,41 @@ d'amélioration concret (voir section suivante).
 Priorises par impact probable sur le barème et l'usage réel, sur la base de
 tout ce que les tests ont révèle.
 
+### Implémenté, mais non validé en conditions réelles
+
+- **Agent récupérateur de référence (API Légifrance/PISTE)** : suivant la
+  recommandation du prof. Après génération de la réponse, `reference_checker.py`
+  interroge en direct l'API Légifrance (`legifrance_client.py`, OAuth2 client
+  credentials + endpoints `/search` et `/consult/getArticle`) pour chaque
+  article cité, et compare le texte actuellement en vigueur au texte de
+  notre corpus local. Répond concrètement à la question de réflexion 3
+  (fraîcheur) : au lieu d'afficher seulement une date de corpus, le système
+  vérifierait activement. Choix de conception : **post-traitement
+  déterministe**, pas de fusion technique avec l'API Groq - deux appels HTTP
+  indépendants orchestrés par notre propre code (`cli.py`), pas de
+  "function calling" LLM. Dégradation silencieuse si `PISTE_CLIENT_ID`/
+  `PISTE_CLIENT_SECRET` ne sont pas configurés dans `.env` : le pipeline
+  principal n'est jamais bloqué par l'indisponibilité de cette vérification
+  optionnelle (verifie et teste : le pipeline principal tourne normalement
+  sans identifiants PISTE).
+
+  **Limite assumee** : le code est écrit et suit la documentation officielle
+  de l'API (flux OAuth2 client credentials, format exact des requêtes
+  `/search` et `/consult/getArticle`), mais **n'a pas pu être validé de bout
+  en bout avec un compte PISTE réel** dans le temps disponible. Blocage
+  rencontré : l'inscription PISTE nécessite l'acceptation des CGU de l'API
+  Légifrance pour pouvoir cocher la case "Légifrance" dans la configuration
+  de l'application (sandbox) ; le parcours de consentement CGU renvoie une
+  erreur 403 Forbidden ("You don't have permission to access this
+  resource") au moment de l'autorisation OAuth, malgré plusieurs tentatives
+  et la génération de deux jeux d'identifiants différents. Ce blocage est
+  administratif (côté PISTE), pas un bug de notre client HTTP : l'obtention
+  d'un jeton OAuth2 a bien fonctionné avec des identifiants valides (voir
+  COMPTE_RENDU.md), seule l'autorisation de consommer l'API Légifrance
+  spécifiquement reste bloquée. Le module reste inclus dans le rendu comme
+  preuve de la démarche suivie, correctement isolé (aucun impact sur le
+  reste du pipeline si non fonctionnel).
+
 ### Priorite haute
 
 - **Filtrage post-génération des numéros d'articles hors contexte** : valider
@@ -371,10 +433,15 @@ tout ce que les tests ont révèle.
   `generation.py`.
 
 - **Étendre le corpus via l'API Legifrance (Option A) ou le dump LEGI
-  (Option B)** : 40 articles restent un corpus réduit. Un corpus plus large
-  reduirait a la fois le bruit dans les sources (moins d'articles marginaux
-  matches par defaut) et le recouvrement observe entre "pieges" juridiques
-  adjacents et corpus réel lors de la calibration.
+  (Option B)** : 40 articles restent un corpus réduit. Le client Légifrance
+  déjà écrit pour l'agent récupérateur de référence (`legifrance_client.py`)
+  peut être réutilisé tel quel pour cette extension : la fonction
+  `search_article_internal_id` + `get_article_text_by_internal_id` suffit à
+  récupérer davantage d'articles par thème automatiquement, sans réécrire de
+  client HTTP. Un corpus plus large reduirait a la fois le bruit dans les
+  sources (moins d'articles marginaux matches par defaut) et le recouvrement
+  observe entre "pieges" juridiques adjacents et corpus réel lors de la
+  calibration.
 
 - **Réduire le bruit du quota par sous-question** : le correctif qui reserve
   un quota minimum par sous-question (question 1) resout un vrai bug mais
@@ -386,9 +453,10 @@ tout ce que les tests ont révèle.
 ### Priorite moyenne
 
 - **Recalibrer `HARD_REFUSAL_THRESHOLD` après tout agrandissement du
-  corpus** : le seuil actuel (0.30) est valide pour 40 articles ; il devra
-  être reverifie avec `tests/calibrate_confidence.py` des que le corpus
-  change significativement (voir Limites connues).
+  corpus** : le seuil actuel (0.38, recalibre apres correction des accents -
+  voir COMPTE_RENDU.md) est valide pour 40 articles ; il devra être
+  reverifie avec `tests/calibrate_confidence.py` des que le corpus change
+  significativement (voir Limites connues).
 - **Mode rapide pour la demonstration** : desactiver HyDE et decomposition a
   la demande (`chat --fast`) pour réduire la latence en soutenance, ou toute
   demo devant un public qui n'a pas besoin de voir chaque amélioration a
